@@ -1,0 +1,26 @@
+services:
+  miner-axon:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: dippy-studio-bittensor-miner:latest
+    container_name: dippy-studio-bittensor-miner
+    ports:
+      - "8091:8091"
+    environment:
+      - HF_TOKEN=${HF_TOKEN}
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+    volumes:
+      - ./datasets:/app/datasets
+      - ./output:/app/output
+      - ./config:/app/config
+      - ./baseflux:/app/baseflux:ro
+      - ~/.cache/huggingface:/root/.cache/huggingface
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped

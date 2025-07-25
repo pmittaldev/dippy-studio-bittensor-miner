@@ -30,7 +30,7 @@ RUN uv venv && \
     uv pip install -r requirements.txt
 
 # Copy application code
-COPY miner_axon.py .
+COPY training_server.py .
 COPY config_generator.py .
 COPY run.py .
 COPY info.py .
@@ -47,4 +47,4 @@ ENV PYTHONUNBUFFERED=1
 EXPOSE 8091
 
 # Run the miner axon
-CMD ["python", "miner_axon.py"]
+CMD ["python", "training_server.py"]

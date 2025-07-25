@@ -4,6 +4,10 @@ A specialized Bittensor subnet miner for AI model training, focusing on LoRA fin
 
 ## Prerequisites
 
+You will need access to a VPS (or similar setup) with a capable enough GPu. We recommend at least 1 A100 80GB (PCIe or SXM will do fine).
+For managing python installation, we recommend [uv](https://docs.astral.sh/uv/getting-started/installation/) and only officially support this configuration.
+
+
 Before running this miner, you must:
 
 1. **Set up a HuggingFace account and token**:
@@ -17,6 +21,32 @@ Before running this miner, you must:
    - Without accepting the license, the model download will fail
 
 ## Running the Miner
+
+There are three components to running a miner:
+### 1. Miner Reverse Proxy
+This is the public entrypoint
+
+1. Register on testnet via the base command: `btcli s register --netuid 231 --subtensor.network test`
+
+2. Transfer 0.01 testnet TAO to the address `5FU2csPXS5CZfMVd2Ahdis9DNaYmpTCX4rsN11UW7ghdx24A` to qualify for a mining permit. This will be managed internally.
+ 
+3.  Set up the environment variables to load your miner hotkey, and the URLs for which you will host the inference and training servers
+
+
+4. Setup the reverse proxy via the following:  
+a. Navigate to the `reverse_proxy` directory
+b. Install dependencies via `uv pip install -r requirements.txt`
+c. Start the miner via `python reverse_proxy/server.py`
+
+
+### 2. Miner Inference Server
+(Note: You will want to keep this service exposed to only the reverse proxy, guarded from the public internet)
+
+1. Install the requirements via `uv pip install requirements.txt`
+2. Start the server via `python inference_server.py`
+
+### 3. Miner Training Server
+(Note: You will want to keep this service exposed to only the reverse proxy, guarded from the public internet)
 
 ### Using Docker (Recommended)
 

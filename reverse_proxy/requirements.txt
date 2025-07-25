@@ -1,0 +1,30 @@
+# Core dependencies for Bittensor Miner Reverse Proxy
+# Note: For new projects, prefer using pyproject.toml with: pip install -e .[dev]
+# This requirements.txt is maintained for backwards compatibility
+
+# Core framework and server
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+
+# Bittensor and blockchain
+bittensor==9.8.3
+substrate-interface>=1.7.0
+
+# HTTP client for request forwarding
+httpx>=0.24.0
+
+# Utilities
+loguru>=0.7.0
+base58>=2.1.1
+websockets>=11.0.0
+python-dotenv>=1.0.0
+
+# Development dependencies (uncomment if needed)
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0
+# pytest-cov>=4.0.0
+# black>=23.0.0
+# isort>=5.12.0
+# flake8>=6.0.0
+# mypy>=1.0.0
+# pre-commit>=3.0.0

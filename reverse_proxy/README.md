@@ -15,6 +15,13 @@ This reverse proxy serves as the public-facing entrypoint for the Bittensor mine
 
 - Python 3.8 or higher
 - A valid Bittensor hotkey for authentication
+- Enough alpha stake. The alpha stake required will be dynamic and will be available at https://sn11.dippy-bittensor-subnet.com/alpha once all validators are online 
+- H100 PCIe with the following specific `nvidia-smi` configuration
+```
++-----------------------------------------------------------------------------------------+
+| NVIDIA-SMI 570.172.08             Driver Version: 570.172.08     CUDA Version: 12.8     |
+|-----------------------------------------+------------------------+----------------------+
+```
 
 ### Installation
 
@@ -73,7 +80,7 @@ The total commit string is limited to 128 bytes to comply with blockchain constr
 #### Prerequisites
 
 - Bittensor wallet set up with coldkey and hotkey
-- Access to Bittensor testnet (netuid 231)
+- Access to Bittensor testnet (netuid 231) or mainnet (netuid 11)
 - Python environment with bittensor installed
 
 #### Commands

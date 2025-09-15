@@ -1,6 +1,7 @@
 """Main reverse proxy server for Bittensor subnet miner."""
 
 import os
+import time
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Optional
@@ -71,17 +72,58 @@ async def verify_epistula_auth(request: Request) -> bool:
     auth_header = request.headers.get("Authorization")
     if not auth_header:
         raise HTTPException(status_code=401, detail="Authorization header required")
-    
-    # TODO: Implement actual Epistula verification logic
-    # This is a placeholder - you'll need to implement the actual verification
-    # based on the Epistula protocol requirements
+
+    if not auth_header.startswith("Epistula "):
+        raise HTTPException(status_code=401, detail="Invalid authorization scheme")
+
+    header_signature = auth_header.split(" ", 1)[1].strip()
+    signature_header = request.headers.get("Epistula-Signature")
+    signature = signature_header or header_signature
+
+    if signature_header and signature_header.strip() != header_signature:
+        raise HTTPException(status_code=401, detail="Authorization signature mismatch")
+
+    timestamp = request.headers.get("Epistula-Timestamp")
+    uuid_str = request.headers.get("Epistula-UUID")
+    signed_by = request.headers.get("Epistula-Signed-By")
+    signed_for = request.headers.get("Epistula-Signed-For")
+
+    if not all([signature, timestamp, uuid_str, signed_by, signed_for]):
+        raise HTTPException(status_code=401, detail="Missing Epistula authentication headers")
+
+    if not signature.startswith("0x"):
+        signature = f"0x{signature}"
+
     try:
-        # Placeholder authentication logic
-        logger.info(f"Verifying authentication for request to {request.url.path}")
-        return True
-    except Exception as e:
-        logger.error(f"Authentication failed: {e}")
-        raise HTTPException(status_code=401, detail="Authentication failed")
+        body = await request.body()
+    except Exception as exc:
+        logger.error(f"Failed to read request body for authentication: {exc}")
+        raise HTTPException(status_code=400, detail="Unable to read request body")
+
+    request._body = body
+
+    now_ms = int(time.time() * 1000)
+
+    error = await epistula_verifier.verify_signature(
+        signature=signature,
+        body=body,
+        timestamp=timestamp,
+        uuid_str=uuid_str,
+        signed_for=signed_for,
+        signed_by=signed_by,
+        now=now_ms,
+        path=request.url.path,
+    )
+
+    if error:
+        logger.warning(f"Epistula authentication failed: {error}")
+        raise HTTPException(status_code=401, detail=error)
+
+    logger.debug(
+        f"Epistula authentication succeeded: signed_by={signed_by}, signed_for={signed_for}, uuid={uuid_str}"
+    )
+
+    return True
 
 
 @app.get("/")
@@ -98,6 +140,15 @@ async def status():
         "service": "bittensor-miner-reverse-proxy",
         "version": "0.1.0",
         "epistula_ready": epistula_verifier is not None
+    }
+
+
+@app.get("/capacity")
+async def capacity(authenticated: bool = Depends(verify_epistula_auth)):
+    """Return supported capacity information."""
+    return {
+        "inference": ["base"],
+        "training": ["H100pcie"],
     }
 
 

@@ -1,17 +1,17 @@
 import os
-import sys
-import json
 import asyncio
-import threading
 import uuid
 import time
 from pathlib import Path
-from datetime import datetime
-from typing import Optional, Dict, Any, List
+from datetime import datetime, timezone
+from typing import Optional, Dict, Any
+from dataclasses import dataclass, field
 import logging
 from concurrent.futures import ThreadPoolExecutor
+from enum import Enum
 import subprocess
 import requests
+import aiohttp
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Request
 from fastapi.responses import FileResponse, JSONResponse
@@ -51,6 +51,18 @@ class InferenceRequestModel(BaseModel):
     guidance_scale: float = Field(default=7.0, ge=1.0, le=20.0)
     seed: Optional[int] = None
     job_id: Optional[str] = None
+    callback_url: Optional[str] = Field(
+        default=None,
+        description="HTTP endpoint that receives the generated image"
+    )
+    callback_secret: Optional[str] = Field(
+        default=None,
+        description="Secret forwarded via X-Callback-Secret header"
+    )
+    expiry: Optional[datetime] = Field(
+        default=None,
+        description="ISO 8601 timestamp (UTC) after which callbacks are skipped"
+    )
 
 class ServerConfig(BaseModel):
     enable_training: bool = Field(default=True, description="Enable training endpoints")
@@ -59,6 +71,124 @@ class ServerConfig(BaseModel):
     model_path: str = Field(default="black-forest-labs/FLUX.1-dev", description="Base model path")
     output_dir: str = Field(default="./output", description="Output directory")
     preload_engines: bool = Field(default=True, description="Preload TRT engines at startup")
+
+
+@dataclass
+class QueuedInferenceTask:
+    job_id: str
+    inference_request: InferenceRequest
+    callback_url: Optional[str]
+    callback_secret: Optional[str]
+    expiry: Optional[datetime]
+    enqueued_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class CallbackStatus(str, Enum):
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+def normalize_expiry(expiry: Optional[datetime]) -> Optional[datetime]:
+    if expiry is None:
+        return None
+    if expiry.tzinfo is None:
+        return expiry.replace(tzinfo=timezone.utc)
+    return expiry.astimezone(timezone.utc)
+
+
+async def wait_for_image(output_path: Path, timeout: Optional[float], poll_interval: float = 0.5) -> Path:
+    start_time = time.monotonic()
+    while True:
+        if output_path.exists():
+            return output_path
+
+        if timeout and timeout > 0 and (time.monotonic() - start_time) > timeout:
+            raise TimeoutError(
+                f"Timed out after {timeout} seconds waiting for image at {output_path}"
+            )
+
+        await asyncio.sleep(poll_interval)
+
+
+async def dispatch_callback(
+    task: QueuedInferenceTask,
+    status: CallbackStatus,
+    *,
+    image_path: Optional[Path] = None,
+    error: Optional[str] = None
+) -> Dict[str, Any]:
+    attempted_at = datetime.now(timezone.utc)
+    attempt_iso = attempted_at.isoformat()
+
+    if not task.callback_url:
+        return {
+            "status": "skipped",
+            "reason": "missing_callback_url",
+            "attempted_at": attempt_iso,
+            "payload_status": status.value
+        }
+
+    expiry = task.expiry
+    if expiry and attempted_at > expiry:
+        return {
+            "status": "expired",
+            "attempted_at": attempt_iso,
+            "expiry": expiry.isoformat(),
+            "payload_status": status.value
+        }
+
+    callback_timeout = getattr(app.state, "callback_timeout", 30)
+    headers = {}
+    if task.callback_secret:
+        headers["X-Callback-Secret"] = task.callback_secret
+
+    form = aiohttp.FormData()
+    form.add_field("job_id", task.job_id)
+    form.add_field("status", status.value)
+    form.add_field("completed_at", attempt_iso)
+    if error:
+        form.add_field("error", error)
+
+    image_bytes: Optional[bytes] = None
+    if image_path is not None:
+        try:
+            image_bytes = await asyncio.to_thread(image_path.read_bytes)
+        except FileNotFoundError:
+            logger.warning(f"Image path not found for job {task.job_id}: {image_path}")
+        except Exception as exc:
+            logger.error(f"Failed to read generated image for job {task.job_id}: {exc}")
+            return {
+                "status": "failed",
+                "error": f"Unable to read image: {exc}",
+                "attempted_at": attempt_iso,
+                "payload_status": status.value
+            }
+
+    if image_bytes is not None:
+        form.add_field("image", image_bytes, filename=image_path.name, content_type="image/png")
+        form.add_field("image_url", f"{app.state.SERVICE_URL}/images/{image_path.stem}.png")
+
+    timeout_config = aiohttp.ClientTimeout(total=callback_timeout)
+
+    try:
+        async with aiohttp.ClientSession(timeout=timeout_config) as session:
+            async with session.post(task.callback_url, data=form, headers=headers) as response:
+                response_text = await response.text()
+                return {
+                    "status": "delivered" if response.status < 400 else "error",
+                    "status_code": response.status,
+                    "response_preview": response_text[:500],
+                    "attempted_at": attempt_iso,
+                    "payload_status": status.value
+                }
+    except Exception as exc:
+        logger.error(f"Callback delivery failed for job {task.job_id}: {exc}")
+        return {
+            "status": "failed",
+            "error": str(exc),
+            "attempted_at": attempt_iso,
+            "payload_status": status.value
+        }
 
 def load_trt_server():
     """Load TRT server (called at startup or lazily)"""
@@ -71,10 +201,17 @@ def load_trt_server():
     if config.enable_inference and config.trt_engine_path:
         try:
             logger.info("Initializing TRT inference server...")
+            engine_path = Path(config.trt_engine_path)
+            mapping_env = os.getenv("TRT_MAPPING_PATH")
+            if mapping_env:
+                mapping_path = Path(mapping_env)
+            else:
+                mapping_candidate = engine_path.with_name("mapping.json")
+                mapping_path = mapping_candidate if mapping_candidate.exists() else Path("./trt/mapping.json")
             trt_server = TRTInferenceServer(
                 base_model_path=config.model_path,
-                engine_path=config.trt_engine_path,
-                mapping_path="./trt/mapping.json"
+                engine_path=str(engine_path),
+                mapping_path=str(mapping_path)
             )
             # Start the inference server in background
             trt_server.start()
@@ -164,10 +301,100 @@ async def initialize_servers():
     logger.info(f"Server initialized. Output directory: {config.output_dir}")
     logger.info(f"Service URL: {app.state.SERVICE_URL}")
     
+    # Configure inference queue and workers
+    app.state.inference_timeout = int(os.getenv("INFERENCE_TIMEOUT", "300"))
+    app.state.callback_timeout = int(os.getenv("CALLBACK_TIMEOUT", "30"))
+    queue_maxsize_env = int(os.getenv("INFERENCE_QUEUE_MAXSIZE", "0"))
+    queue_maxsize = max(0, queue_maxsize_env)
+    worker_count = max(1, int(os.getenv("INFERENCE_WORKERS", "1")))
+
+    if config.enable_inference:
+        app.state.inference_queue = asyncio.Queue(maxsize=queue_maxsize)
+        app.state.inference_worker_tasks = [
+            asyncio.create_task(inference_queue_worker(idx))
+            for idx in range(worker_count)
+        ]
+        queue_desc = "unbounded" if queue_maxsize == 0 else queue_maxsize
+        logger.info(
+            f"Inference queue ready (workers={worker_count}, maxsize={queue_desc}, timeout={app.state.inference_timeout}s)"
+        )
+    else:
+        app.state.inference_queue = None
+        app.state.inference_worker_tasks = []
+
     # Start TRT engine preloading if enabled
     await preload_trt_engines()
 
     return config
+
+
+async def inference_queue_worker(worker_id: int):
+    queue: asyncio.Queue = app.state.inference_queue
+    logger.info(f"Inference worker {worker_id} started")
+
+    while True:
+        task = await queue.get()
+
+        if task is None:
+            logger.info(f"Inference worker {worker_id} shutting down")
+            queue.task_done()
+            break
+
+        job_id = task.job_id
+        job_record = inference_jobs.get(job_id, {})
+        job_record.update({
+            "id": job_id,
+            "status": "processing",
+            "started_at": datetime.now(timezone.utc).isoformat(),
+            "worker_id": worker_id
+        })
+
+        inference_jobs[job_id] = job_record
+
+        try:
+            server = load_trt_server()
+            if server is None:
+                raise RuntimeError("TRT inference server is not available")
+
+            server.submit(task.inference_request)
+            output_path = Path(task.inference_request.output_path)
+
+            try:
+                await wait_for_image(output_path, getattr(app.state, "inference_timeout", 300))
+            except TimeoutError as exc:
+                callback_info = await dispatch_callback(task, CallbackStatus.FAILED, error=str(exc))
+                job_record.update({
+                    "status": "timeout",
+                    "error": str(exc),
+                    "failed_at": datetime.now(timezone.utc).isoformat(),
+                    "callback": callback_info
+                })
+                continue
+
+            completed_at = datetime.now(timezone.utc).isoformat()
+            job_record.update({
+                "status": "completed",
+                "completed_at": completed_at,
+                "output_path": str(output_path),
+                "result_url": f"/inference/result/{job_id}",
+                "image_url": f"{app.state.SERVICE_URL}/images/{job_id}.png"
+            })
+
+            callback_info = await dispatch_callback(task, CallbackStatus.COMPLETED, image_path=output_path)
+            job_record["callback"] = callback_info
+
+        except Exception as exc:
+            logger.error(f"Inference worker {worker_id} failed for job {job_id}: {exc}", exc_info=True)
+            callback_info = await dispatch_callback(task, CallbackStatus.FAILED, error=str(exc))
+            job_record.update({
+                "status": "failed",
+                "error": str(exc),
+                "failed_at": datetime.now(timezone.utc).isoformat(),
+                "callback": callback_info
+            })
+        finally:
+            inference_jobs[job_id] = job_record
+            queue.task_done()
 
 @app.post("/train", status_code=201)
 async def train(request: TrainingRequest, background_tasks: BackgroundTasks):
@@ -321,84 +548,84 @@ async def notify_validator(endpoint: str, job_id: str, status: str, output_path:
 
 @app.post("/inference")
 async def generate_image(request: InferenceRequestModel):
-    # Ensure TRT server is loaded
-    if trt_server is None:
-        try:
-            load_trt_server()
-        except Exception as e:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Failed to initialize TRT inference server: {str(e)}"
-            )
+    config = app.state.config
+    if not config.enable_inference:
+        raise HTTPException(status_code=503, detail="Inference is currently disabled")
+
+    inference_queue = getattr(app.state, "inference_queue", None)
+    if inference_queue is None:
+        raise HTTPException(status_code=503, detail="Inference queue is not ready")
+
+    job_id = request.job_id or str(uuid.uuid4())
+
+    existing_job = inference_jobs.get(job_id)
+    if existing_job and existing_job.get("status") not in {"completed", "failed", "timeout"}:
+        raise HTTPException(status_code=409, detail=f"Job {job_id} is already {existing_job.get('status')}")
+
+    output_path = Path(app.state.OUTPUT_DIR) / f"{job_id}.png"
+
+    inference_req = InferenceRequest(
+        prompt=request.prompt,
+        output_path=str(output_path),
+        lora_path=request.lora_path or "",
+        width=request.width,
+        height=request.height,
+        num_inference_steps=request.num_inference_steps,
+        guidance_scale=request.guidance_scale,
+        seed=request.seed or 42
+    )
+
+    expiry = normalize_expiry(request.expiry)
+
+    task = QueuedInferenceTask(
+        job_id=job_id,
+        inference_request=inference_req,
+        callback_url=request.callback_url,
+        callback_secret=request.callback_secret,
+        expiry=expiry
+    )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    inference_jobs[job_id] = {
+        "id": job_id,
+        "status": "queued",
+        "queued_at": now_iso,
+        "request": {
+            "prompt": request.prompt,
+            "lora_path": request.lora_path,
+            "width": request.width,
+            "height": request.height,
+            "num_inference_steps": request.num_inference_steps,
+            "guidance_scale": request.guidance_scale,
+            "seed": request.seed,
+            "callback_url": request.callback_url,
+            "callback_secret_provided": bool(request.callback_secret),
+            "expiry": expiry.isoformat() if expiry else None
+        }
+    }
 
     try:
-        job_id = request.job_id or str(uuid.uuid4())
+        await inference_queue.put(task)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        logger.error(f"Failed to enqueue inference job {job_id}: {exc}")
+        inference_jobs[job_id]["status"] = "failed"
+        inference_jobs[job_id]["error"] = str(exc)
+        inference_jobs[job_id]["failed_at"] = datetime.now(timezone.utc).isoformat()
+        raise HTTPException(status_code=500, detail="Failed to queue inference job")
 
-        # Generate output path for this job using global OUTPUT_DIR
-        output_path = str(Path(app.state.OUTPUT_DIR) / f"{job_id}.png")
+    logger.info(f"Queued inference job {job_id} for prompt '{request.prompt[:50]}...'")
 
-        # Create inference request
-        inference_req = InferenceRequest(
-            prompt=request.prompt,
-            output_path=output_path,
-            lora_path=request.lora_path or "",
-            width=request.width,
-            height=request.height,
-            num_inference_steps=request.num_inference_steps,
-            guidance_scale=request.guidance_scale,
-            seed=request.seed or 42
-        )
-
-        # Store job info
-        inference_jobs[job_id] = {
-            "id": job_id,
-            "status": "pending",
-            "created_at": datetime.now().isoformat(),
-            "request": request.dict()
-        }
-
-        # Submit to TRT server
-        trt_server.submit(inference_req)
-
-        # Wait for inference to complete
-        max_wait_time = 60  # seconds
-        poll_interval = 0.5  # seconds
-        elapsed_time = 0
-
-        while elapsed_time < max_wait_time:
-            output_path = Path(app.state.OUTPUT_DIR) / f"{job_id}.png"
-            if output_path.exists():
-                # Image is ready
-                image_url = f"{app.state.SERVICE_URL}/images/{job_id}.png"
-
-                # Update job status
-                inference_jobs[job_id]["status"] = "completed"
-                inference_jobs[job_id]["output_path"] = str(output_path)
-                inference_jobs[job_id]["completed_at"] = datetime.now().isoformat()
-
-                return {
-                    "success": True,
-                    "job_id": job_id,
-                    "status": "completed",
-                    "message": "Image generated successfully",
-                    "result_url": f"/inference/result/{job_id}",
-                    "image_url": image_url  # Full URL to the image
-                }
-
-            # Wait before checking again
-            await asyncio.sleep(poll_interval)
-            elapsed_time += poll_interval
-
-        # Timeout occurred
-        inference_jobs[job_id]["status"] = "timeout"
-        raise HTTPException(
-            status_code=504,
-            detail=f"Inference timeout after {max_wait_time} seconds"
-        )
-
-    except Exception as e:
-        logger.error(f"Error submitting inference job: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "accepted": True,
+        "job_id": job_id,
+        "status": "queued",
+        "message": "Inference job queued",
+        "status_url": f"/inference/status/{job_id}",
+        "result_url": f"/inference/result/{job_id}"
+    }
 
 @app.get("/inference/status/{job_id}")
 async def get_inference_status(job_id: str):
@@ -409,11 +636,15 @@ async def get_inference_status(job_id: str):
 
     # Check if output exists using global OUTPUT_DIR
     output_path = Path(app.state.OUTPUT_DIR) / f"{job_id}.png"
-    if output_path.exists():
-        job["status"] = "completed"
-        job["output_path"] = str(output_path)
-        job["result_url"] = f"/inference/result/{job_id}"
-        job["image_url"] = f"{app.state.SERVICE_URL}/images/{job_id}.png"
+    if output_path.exists() and job.get("status") in {"queued", "processing"}:
+        job.update({
+            "status": "completed",
+            "output_path": str(output_path),
+            "result_url": f"/inference/result/{job_id}",
+            "image_url": f"{app.state.SERVICE_URL}/images/{job_id}.png",
+            "completed_at": job.get("completed_at", datetime.now(timezone.utc).isoformat())
+        })
+        inference_jobs[job_id] = job
 
     return job
 
@@ -507,19 +738,29 @@ async def root():
         }
     }
 
+@app.on_event("startup")
 async def startup_event():
     await initialize_servers()
 
+@app.on_event("shutdown")
 async def shutdown_event():
     global trt_server
+    inference_queue = getattr(app.state, "inference_queue", None)
+    worker_tasks = getattr(app.state, "inference_worker_tasks", [])
+
+    if inference_queue:
+        # Wait for in-flight tasks to complete before shutting down workers
+        await inference_queue.join()
+        for _ in worker_tasks:
+            await inference_queue.put(None)
+
+        await asyncio.gather(*worker_tasks, return_exceptions=True)
+
     if trt_server:
         trt_server.stop()
     training_executor.shutdown(wait=True)
 
 def main():
-    app.add_event_handler("startup", startup_event)
-    app.add_event_handler("shutdown", shutdown_event)
-
     port = int(os.getenv("MINER_SERVER_PORT", "8091"))
     host = os.getenv("MINER_SERVER_HOST", "0.0.0.0")
 

@@ -4,7 +4,14 @@ A specialized Bittensor subnet miner (subnet 231 on testnet) for AI model traini
 
 ## Prerequisites
 
-You will need access to a VPS (or similar setup) with a capable enough GPu. We recommend at least 1 A100 80GB (PCIe or SXM will do fine).
+<div style="background-color:#fff3cd;border:1px solid #ffeeba;padding:12px 16px;margin-bottom:16px;">
+  <strong>Heads up:</strong> Currently LoRA training is not active at this time.
+</div>
+
+You will need access to a H100 GPU PCIe with the following configuration:
+```
+NVIDIA-SMI 570.172.08             Driver Version: 570.172.08     CUDA Version: 12.8     
+```
 For managing python installation, we recommend [uv](https://docs.astral.sh/uv/getting-started/installation/) and only officially support this configuration.
 
 
@@ -247,9 +254,12 @@ curl http://localhost:8091/inference/status/{job_id}
 ```
 
 ## System Requirements
-
-- **GPU**: NVIDIA GPU with at least 24GB VRAM (recommended: A100, H100)
-- **CUDA**: Version 11.8 or higher
+- H100 PCIe with the following specific `nvidia-smi` configuration. See below for reference:
+```
+NVIDIA-SMI 570.172.08             Driver Version: 570.172.08     CUDA Version: 12.8     
+```
+- **GPU**: NVIDIA H100 GPU PCIe configuration
+- **CUDA**: Version 12.8 Specifically
 - **RAM**: 32GB minimum
 - **Storage**: 100GB+ for model weights and training data
 - **Docker**: Latest version with nvidia-container-toolkit

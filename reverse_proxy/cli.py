@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field, PositiveInt, field_validator
 import bittensor as bt
 from bittensor.core.chain_data import decode_account_id
 from enum import Enum
+import requests
 
 DEFAULT_NETUID = 11
 
@@ -17,6 +18,7 @@ MAX_IP_LENGTH = 45
 MAX_PORT_LENGTH = 5
 # Separator length
 SEPARATOR_LENGTH = 1
+CHECK_ENDPOINT_TIMEOUT = 3.0
 
 
 class CommitDataStatus(Enum):
@@ -333,6 +335,25 @@ def extract_raw_data(data):
     return None
 
 
+def check_hotkey_endpoint(address: str, port: str, hotkey: str, timeout: float = CHECK_ENDPOINT_TIMEOUT) -> bool:
+    """Return True if the miner's /check endpoint responds with HTTP 200."""
+    host = address
+    if ":" in address and not address.startswith("["):
+        host = f"[{address}]"
+
+    url = f"https://{host}:{port}/check/{hotkey}"
+
+    try:
+        response = requests.get(url, timeout=timeout)
+        if response.status_code == 200:
+            return True
+        bt.logging.debug(f"/check endpoint returned {response.status_code} for hotkey {hotkey} ({url})")
+    except requests.RequestException as exc:
+        bt.logging.debug(f"Failed to reach /check endpoint for hotkey {hotkey} at {url}: {exc}")
+
+    return False
+
+
 def get_all_registrations(config):
     """
     Retrieve all miner registrations from the chain.
@@ -377,6 +398,11 @@ def get_all_registrations(config):
                     # Parse the MinerRegistry from the chain string
                     try:
                         miner_registry = MinerRegistry.from_compressed_str(chain_str)
+                        is_active = check_hotkey_endpoint(
+                            miner_registry.address,
+                            miner_registry.port,
+                            str(hotkey)
+                        )
                         registrations[str(hotkey)] = {
                             "block": body["block"],
                             "chain_str": chain_str,
@@ -384,7 +410,8 @@ def get_all_registrations(config):
                             "decoded_fields": {
                                 "address": miner_registry.address,
                                 "port": miner_registry.port,
-                            }
+                            },
+                            "check_valid": is_active,
                         }
                         bt.logging.info(f"Decoded registration for hotkey {hotkey}: {miner_registry}")
                     except Exception as e:
@@ -393,7 +420,8 @@ def get_all_registrations(config):
                             "block": body["block"],
                             "chain_str": chain_str,
                             "registry": None,
-                            "error": str(e)
+                            "error": str(e),
+                            "check_valid": False,
                         }
                         
             except Exception as e:
@@ -434,7 +462,10 @@ def print_all_registrations(config):
             print("Decoded Fields:")
             for field_name, field_value in data['decoded_fields'].items():
                 print(f"  - {field_name}: {field_value}")
-        elif data.get('error'):
+        if 'check_valid' in data:
+            status_label = "valid" if data['check_valid'] else "invalid"
+            print(f"Check Endpoint: {status_label}")
+        if data.get('error'):
             print(f"Error: {data['error']}")
             
         print("-"*80)
@@ -539,17 +570,24 @@ def check_commit(config):
         valid_count = sum(1 for c in parsed_commitments if c.status == CommitDataStatus.VALID)
         invalid_count = len(parsed_commitments) - valid_count
         
-        print(f"\nSummary: {valid_count} valid, {invalid_count} invalid")
+        print(f"\nSummary: {valid_count} parsed commits, {invalid_count} invalid commits")
         print("-"*80)
         
         # Show valid commitments first
-        print(f"\n{'='*20} VALID COMMITMENTS {'='*20}")
+        print(f"\n{'='*20} PARSED COMMITMENTS {'='*20}")
         for commit in parsed_commitments:
             if commit.status == CommitDataStatus.VALID:
+                endpoint_valid = check_hotkey_endpoint(
+                    commit.registry.address,
+                    commit.registry.port,
+                    str(commit.hotkey)
+                )
+                endpoint_status = "valid" if endpoint_valid else "invalid"
                 print(f"\nHotkey: {commit.hotkey}")
                 print(f"Block: {commit.block}")
                 print(f"Address: {commit.registry.address}")
                 print(f"Port: {commit.registry.port}")
+                print(f"Check Endpoint: {endpoint_status}")
                 print(f"String Length: {commit.string_length}")
                 print("-"*40)
         

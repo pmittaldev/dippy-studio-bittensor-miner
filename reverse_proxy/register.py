@@ -7,7 +7,7 @@ import bittensor as bt
 from bittensor.core.chain_data import decode_account_id
 from enum import Enum
 
-DEFAULT_NETUID = 231
+DEFAULT_NETUID = 11
 
 # The maximum bytes for metadata on the chain.
 MAX_METADATA_BYTES = 128
@@ -112,8 +112,8 @@ def add_common_args(parser):
         "--network",
         type=str,
         default="finney",
-        choices=["finney", "test", "local"],
-        help="The bittensor network to use (finney for mainnet, test for testnet, local for local)",
+        choices=["finney", "local"],
+        help="Bittensor network selection (finney for mainnet, local for development)",
     )
     
     # Include wallet and logging arguments from bittensor
@@ -129,17 +129,14 @@ def get_config():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Register on mainnet
-  python register.py register --wallet.name coldkey --wallet.hotkey hotkey1 --address '13.89.38.129' --port '9999' --online
-
-  # Register on testnet
-  python register.py register --network test --netuid 231 --wallet.name coldkey --wallet.hotkey hotkey1 --address '13.89.38.129' --port '9999' --online
+  # Register on mainnet (subnet 11)
+  python register.py register --network finney --netuid 11 --wallet.name coldkey --wallet.hotkey hotkey1 --address '13.89.38.129' --port '9999' --online
 
   # Read all registrations
   python register.py read --network finney --netuid 11
 
   # Check your commit data
-  python register.py check --wallet.name coldkey --wallet.hotkey hotkey1 --network test --netuid 231
+  python register.py check --network finney --netuid 11 --wallet.name coldkey --wallet.hotkey hotkey1
         """
     )
     

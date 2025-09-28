@@ -1,4 +1,31 @@
-.PHONY: help setup-inference setup-training build trt-build trt-rebuild up down logs restart clean-cache clean-model clean-all
+.PHONY: help setup-inference setup-training build trt-build trt-rebuild up down logs restart clean-cache clean-model clean-all reverse-proxy-config reverse-proxy-setup reverse-proxy-run reverse-proxy-dev
+
+PYTHON ?= python
+PIP ?= uv pip
+REVERSE_PROXY_CONFIG := $(abspath reverse_proxy/config.json)
+REVERSE_PROXY_CONFIG_EXAMPLE := $(abspath reverse_proxy/config.example.json)
+REVERSE_PROXY_DEPS_SENTINEL := reverse_proxy/.deps-installed
+REVERSE_PROXY_REQUIREMENTS := reverse_proxy/requirements.txt
+
+reverse-proxy-config:
+	@if [ -f $(REVERSE_PROXY_CONFIG) ]; then \
+		echo "reverse_proxy/config.json already exists (skipping)."; \
+	else \
+		cp $(REVERSE_PROXY_CONFIG_EXAMPLE) $(REVERSE_PROXY_CONFIG); \
+		echo "Generated reverse_proxy/config.json"; \
+	fi
+
+reverse-proxy-setup: reverse-proxy-config $(REVERSE_PROXY_DEPS_SENTINEL)
+
+
+$(REVERSE_PROXY_DEPS_SENTINEL): $(REVERSE_PROXY_REQUIREMENTS)
+	$(PIP) install -r $(REVERSE_PROXY_REQUIREMENTS)
+	touch $(REVERSE_PROXY_DEPS_SENTINEL)
+
+reverse-proxy-run: reverse-proxy-config $(REVERSE_PROXY_DEPS_SENTINEL)
+	REVERSE_PROXY_CONFIG_PATH=$(REVERSE_PROXY_CONFIG) $(PYTHON) -m reverse_proxy.server
+
+reverse-proxy-dev: reverse-proxy-run
 
 help:
 	@echo "Dippy Studio Bittensor Miner Commands:"
@@ -16,6 +43,12 @@ help:
 	@echo "    make down        - Stop miner service"
 	@echo "    make logs        - Follow miner logs"
 	@echo "    make restart     - Restart miner service"
+	@echo ""
+	@echo "  Reverse Proxy:"
+	@echo "    make reverse-proxy-setup - Install deps and prepare config"
+	@echo "    make reverse-proxy-run   - Start the reverse proxy"
+	@echo "    make reverse-proxy-dev   - Start the proxy (alias of run)"
+	@echo "    make reverse-proxy-config - Copy example config if missing"
 	@echo ""
 	@echo "  Maintenance:"
 	@echo "    make clean-cache - Remove all cached TRT engines"
@@ -151,4 +184,3 @@ setup-training:
 	@echo "✅ Training service deployed!"
 	@echo "   API: http://localhost:8091"
 	@echo "   Logs: make logs"
-

@@ -1,34 +1,24 @@
 """Epistula authentication verifier."""
 
-import os
-import json
-import time
 import base58
-import websockets
-from typing import Dict, List, Optional, Tuple
 from hashlib import blake2b, sha256
+from typing import Optional
 
 from loguru import logger
 from substrateinterface import Keypair
 
-# No relative import here because when not used in the package itself
-
-MINER_HOTKEY = os.environ.get("MINER_HOTKEY")
-if not MINER_HOTKEY:
-    raise ValueError("MINER_HOTKEY environment variable must be set")
-
-
 class EpistulaVerifier:
     """Handles verification of Epistula protocol authentication."""
 
-    def __init__(self, allowed_delta_ms: int = 8000, cache_duration: int = 3600):
+    def __init__(
+        self,
+        miner_hotkey: str,
+        allowed_delta_ms: int = 8000,
+    ):
+        if not miner_hotkey:
+            raise ValueError("miner_hotkey must be provided for EpistulaVerifier")
         self.ALLOWED_DELTA_MS = allowed_delta_ms
-        self.MINER_HOTKEY = MINER_HOTKEY
-        self.cache_duration = cache_duration  # Cache duration in seconds
-        self.stake_cache: Dict[str, Tuple[float, float, bool]] = (
-            {}
-        )  # hotkey -> (timestamp, stake, valid)
-        self.chain_endpoint = "wss://entrypoint-finney.opentensor.ai:443"
+        self.MINER_HOTKEY = miner_hotkey
         logger.info(
             f"Initialized EpistulaVerifier with miner hotkey: {self.MINER_HOTKEY}"
         )
@@ -117,47 +107,6 @@ class EpistulaVerifier:
         if isinstance(address_bytes, str):
             address_bytes = bytes.fromhex(address_bytes)
         return address_bytes.hex()
-
-    async def call_rpc(self, call_params: List[str]) -> List[Dict]:
-        """Call the RPC and return the results."""
-        async with websockets.connect(self.chain_endpoint, ping_interval=None) as ws:
-            await ws.send(
-                json.dumps(
-                    {
-                        "jsonrpc": "2.0",
-                        "id": 1,
-                        "method": "state_subscribeStorage",
-                        "params": [call_params],
-                    }
-                )
-            )
-            await ws.recv()  # Ignore confirmation response
-            response = await ws.recv()
-            changes = json.loads(response)["params"]["result"]["changes"]
-            return changes
-
-    async def get_stake_from_hotkey(self, hotkey: str) -> float:
-        """Retrieve stakes for a hotkey asynchronously."""
-        stake = 0.0
-        call_params = [
-            "0x"
-            + "658faa385070e074c85bf6b568cf0555"  # subtensorModule
-            + "7b4e834c482cd6f103e108dacad0ab65"  # totalHotkeyStake
-            + self.convert_ss58_to_hex(hotkey)
-        ]
-
-        try:
-            call_results = await self.call_rpc(call_params)
-            if call_results[0] is not None:
-                stake_hex = call_results[0][1][2:]
-                stake = int(stake_hex, 16)
-                stake = round(stake / 1e9, 4)
-                logger.debug(f"Retrieved stake for {hotkey}: {stake}")
-            return stake
-        except Exception as e:
-            logger.error(f"Error getting stake for {hotkey}: {e}")
-            raise
-
 
     async def verify_signature(
         self,

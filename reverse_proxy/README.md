@@ -23,51 +23,43 @@ This reverse proxy serves as the public-facing entrypoint for the Bittensor mine
 |-----------------------------------------+------------------------+----------------------+
 ```
 
-### Installation
+### Quickstart
 
-#### Using uv (Recommended)
+1. Generate a working configuration (creates `reverse_proxy/config.json` if missing):
+   ```bash
+   make reverse-proxy-config
+   ```
+2. Edit the newly created config and populate at least the miner hotkey field:
+   ```json
+   "auth": {
+     "miner_hotkey": "<your-hotkey>",
+     "allowed_delta_ms": 8000,
+     "cache_duration": 3600,
+     "chain_endpoint": "wss://entrypoint-finney.opentensor.ai:443"
+   }
+   ```
+   Update `services.training_server_url` and `services.inference_server_url` if your backends are not on `http://localhost:8091`.
+3. Install the reverse proxy dependencies:
+   ```bash
+   make reverse-proxy-setup
+   ```
+4. Launch the proxy (runs FastAPI/uvicorn using the config above):
+   ```bash
+   make reverse-proxy-run
+   ```
 
-```bash
-# Install the package in development mode with all dependencies
-uv pip install -e .[dev]
-```
+`reverse-proxy-run` honours the `REVERSE_PROXY_CONFIG_PATH` environment variable, so you can point to alternate configs as needed. The `reverse-proxy-dev` target is an alias for the same command.
 
-#### Using pip
+### Public Endpoints
 
-```bash
-# Install the package in development mode
-pip install -e .[dev]
-
-# Or for production (without dev dependencies)
-pip install -e .
-```
-
-### Environment Configuration
-
-Create a `.env` file in the reverse_proxy directory:
-
-```bash
-# Copy the example file and customize it
-cp env.example .env
-# Then edit .env with your specific values
-```
-
-The `env.example` file contains all available configuration options with detailed comments. Key settings include:
-
-**Required:**
-- `MINER_HOTKEY` - Your Bittensor miner hotkey for Epistula authentication
-
-**Important Optional:**
-- `HOST` / `PORT` - Server binding configuration  
-- `TRAINING_SERVER_URL` / `INFERENCE_SERVER_URL` - Internal service endpoints
-- `CHAIN_ENDPOINT` - Bittensor chain endpoint (mainnet/testnet)
-- `LOG_LEVEL` - Logging verbosity
+- `/check/{identifier}` – Returns HTTP 200 with `{ "status": "ok" }` when the path parameter matches the configured miner hotkey. This is an unauthenticated sanity check validators can use to confirm the proxy is advertising the expected identity.
+- `/capacity` – Requires a valid Epistula-signed request and responds with the proxy's advertised capabilities (`{"inference": [...], "training": [...]}`). Validators use this to understand which workloads your miner can currently serve.
 
 ### Miner Registry System
 
 The Miner Registry system allows miners to register their network endpoints (IP address and port) on the Bittensor blockchain, enabling validators to discover and connect to miners.
 
-> **Important**: This system is currently **only for use on testnet with subnet/netuid 231**. Do not use on mainnet or other subnets.
+> **Important**: Validators on subnet 11 (netuid 11) read these commitments to discover miners.
 
 #### Overview
 
@@ -80,7 +72,7 @@ The total commit string is limited to 128 bytes to comply with blockchain constr
 #### Prerequisites
 
 - Bittensor wallet set up with coldkey and hotkey
-- Access to Bittensor testnet (netuid 231) or mainnet (netuid 11)
+- Access to Bittensor mainnet (netuid 11)
 - Python environment with bittensor installed
 
 #### Commands
@@ -92,12 +84,12 @@ The `register.py` script provides three main commands:
 Register your miner's network endpoint on the blockchain.
 
 ```bash
-python register.py register --network test --netuid 231 --wallet.name <coldkey> --wallet.hotkey <hotkey> --address <ip_address> --port <port> --online
+python register.py register --network finney --netuid 11 --wallet.name <coldkey> --wallet.hotkey <hotkey> --address <ip_address> --port <port> --online
 ```
 
 **Parameters:**
-- `--network test`: Use testnet (required)
-- `--netuid 231`: Subnet ID 231 (required)
+- `--network finney`: Use mainnet (required)
+- `--netuid 11`: Subnet ID 11 (required)
 - `--wallet.name`: Your coldkey name
 - `--wallet.hotkey`: Your hotkey name
 - `--address`: Your miner's IP address or hostname (e.g., "13.89.38.129")
@@ -106,7 +98,7 @@ python register.py register --network test --netuid 231 --wallet.name <coldkey> 
 
 **Example:**
 ```bash
-python register.py register --network test --netuid 231 --wallet.name coldkey --wallet.hotkey hotkey231 --address "13.89.38.129" --port "9999" --online
+python register.py register --network finney --netuid 11 --wallet.name coldkey --wallet.hotkey hotkey11 --address "13.89.38.129" --port "9999" --online
 ```
 
 ##### 2. Check Command
@@ -114,22 +106,22 @@ python register.py register --network test --netuid 231 --wallet.name coldkey --
 View all registered miners on the subnet.
 
 ```bash
-python register.py check --network test --netuid 231 [--verbose]
+python register.py check --network finney --netuid 11 [--verbose]
 ```
 
 **Parameters:**
-- `--network test`: Use testnet (required)
-- `--netuid 231`: Subnet ID 231 (required)
+- `--network finney`: Use mainnet (required)
+- `--netuid 11`: Subnet ID 11 (required)
 - `--verbose`: Show detailed error information for invalid entries (optional)
 
 **Example (basic):**
 ```bash
-python register.py check --network test --netuid 231
+python register.py check --network finney --netuid 11
 ```
 
 **Example (verbose):**
 ```bash
-python register.py check --network test --netuid 231 --verbose
+python register.py check --network finney --netuid 11 --verbose
 ```
 
 ##### 3. Read Command
@@ -137,7 +129,7 @@ python register.py check --network test --netuid 231 --verbose
 Read all registrations (legacy format support).
 
 ```bash
-python register.py read --network test --netuid 231
+python register.py read --network finney --netuid 11
 ```
 
 #### Output Format
@@ -145,7 +137,7 @@ python register.py read --network test --netuid 231
 ##### Successful Registration
 When successfully registered, you'll see:
 - Coldkey and hotkey addresses
-- Network confirmation (test)
+- Network confirmation (finney)
 - Compressed string that was committed
 - Success message with transaction details
 
@@ -183,12 +175,12 @@ The check command displays:
 For detailed logging, add `--logging.debug`:
 
 ```bash
-python register.py register --network test --netuid 231 --wallet.name coldkey --wallet.hotkey hotkey231 --address "13.89.38.129" --port "9999" --logging.debug --online
+python register.py register --network finney --netuid 11 --wallet.name coldkey --wallet.hotkey hotkey11 --address "13.89.38.129" --port "9999" --logging.debug --online
 ```
 
 #### Important Notes
 
-1. **Testnet Only**: This system is currently configured for testnet subnet 231 only
+1. **Mainnet**: The examples assume subnet 11 on mainnet (`finney`)
 2. **No Hotkey Storage**: The hotkey is not stored in the registry data
 3. **Simple Format**: Only address:port is stored (e.g., "13.89.38.129:9999")
 4. **Size Limit**: Total string must be under 128 characters

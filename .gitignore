@@ -6,6 +6,10 @@ __pycache__/
 # C extensions
 *.so
 
+config.json
+reverse_proxy/config.json
+reverse_proxy/.deps-installed
+
 # Distribution / packaging
 .Python
 build/

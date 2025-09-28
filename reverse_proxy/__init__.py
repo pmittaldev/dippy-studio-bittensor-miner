@@ -7,6 +7,6 @@ with Epistula authentication capabilities.
 __version__ = "0.1.0"
 __author__ = "Bittensor Miner Team"
 
-from .epistula import EpistulaVerifier
+from reverse_proxy.epistula import EpistulaVerifier
 
 __all__ = ["EpistulaVerifier"] 

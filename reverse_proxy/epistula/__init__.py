@@ -1,5 +1,5 @@
 """Epistula authentication module for Bittensor subnet mining."""
 
-from .lib import EpistulaVerifier
+from reverse_proxy.epistula.lib import EpistulaVerifier
 
 __all__ = ["EpistulaVerifier"] 

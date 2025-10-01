@@ -1,0 +1,40 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "dippy-trt-builder.fullname" . }}
+  labels:
+    {{- include "dippy-trt-builder.labels" . | nindent 4 }}
+spec:
+  template:
+    metadata:
+      labels: {{- include "dippy-trt-builder.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      nodeSelector: {{- toYaml .Values.nodeSelector | nindent 8 }}
+      tolerations: {{- toYaml .Values.tolerations | nindent 8 }}
+      containers:
+        - name: builder
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: hf-secret
+                  key: HF_TOKEN
+            - name: MODEL_PATH
+              value: {{ .Values.modelPath | quote }}
+            - name: TRT_CACHE_DIR
+              value: {{ .Values.trtCache.mountPath | quote }}
+            {{- range .Values.extraEnv }}
+            - name: {{ .name }}
+              value: {{ .value | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: trt-cache
+              mountPath: {{ .Values.trtCache.mountPath }}
+          resources: {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: trt-cache
+          persistentVolumeClaim:
+            claimName: {{ .Values.trtCache.pvcName }}

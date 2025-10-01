@@ -1,0 +1,35 @@
+image:
+  repository: piyushcse29/dippy-trt-builder
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# where to write the engines
+trtCache:
+  pvcName: trt-cache
+  size: 50Gi
+  mountPath: /trt-cache
+
+# model to build
+modelPath: black-forest-labs/FLUX.1-dev
+
+# extra build flags (match your compose)
+extraEnv:
+  - name: TRT_BUILD_SAFE
+    value: "0"
+  - name: USE_FLASH_ATTENTION
+    value: "1"
+  - name: XFORMERS_DISABLED
+    value: "0"
+
+# schedule on GPU node (adjust labels/taints to your setup)
+nodeSelector:
+  gpu: "true"
+tolerations:
+  - key: "gpu"
+    operator: "Equal"
+    value: "true"
+    effect: "NoSchedule"
+
+resources:
+  limits:
+    nvidia.com/gpu: 1

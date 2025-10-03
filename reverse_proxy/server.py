@@ -6,11 +6,11 @@ import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Dict, Optional
 
 import httpx
 import uvicorn
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Body, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from loguru import logger
@@ -20,6 +20,11 @@ from reverse_proxy.epistula import EpistulaVerifier
 
 CONFIG: Optional[Config] = None
 epistula_verifier: Optional[EpistulaVerifier] = None
+
+_CAPACITY_STATE: Dict[str, Any] = {
+    "inference": ["base"],
+    "training": ["H100pcie"],
+}
 
 AUTH_SCHEME = "Epistula"
 SIGNATURE_HEADER = "Epistula-Signature"
@@ -221,6 +226,24 @@ async def verify_epistula_auth(request: Request) -> bool:
     return True
 
 
+async def internal_guard(request: Request) -> bool:
+    """Ensure the request carries the expected internal secret."""
+    config = get_config()
+    secret = config.auth.self_debug_key
+    if not secret:
+        logger.error("Internal guard secret is not configured")
+        raise HTTPException(status_code=500, detail="Internal guard not configured")
+
+    provided = request.headers.get("X-Internal-Secret")
+    if not provided:
+        raise HTTPException(status_code=401, detail="Missing X-Internal-Secret header")
+    if provided != secret:
+        logger.warning("Rejected request with invalid internal secret")
+        raise HTTPException(status_code=403, detail="Invalid internal secret")
+
+    return True
+
+
 @app.get("/")
 async def health_check():
     """Health check endpoint."""
@@ -251,8 +274,51 @@ async def check_identifier(identifier: str):
 async def capacity(authenticated: bool = Depends(verify_epistula_auth)):
     """Return supported capacity information."""
     return {
-        "inference": ["base"],
-        "training": ["H100pcie"],
+        "inference": _CAPACITY_STATE["inference"],
+        "training": _CAPACITY_STATE["training"],
+    }
+
+
+@app.post("/capacity")
+async def update_capacity(
+    updates: Optional[Dict[str, Any]] = Body(default=None),
+    _authorized: bool = Depends(internal_guard),
+):
+    """Update capacity values for inference and training workloads."""
+    if updates:
+        if "inference" in updates:
+            _CAPACITY_STATE["inference"] = updates["inference"]
+        if "training" in updates:
+            _CAPACITY_STATE["training"] = updates["training"]
+
+    return {
+        "inference": _CAPACITY_STATE["inference"],
+        "training": _CAPACITY_STATE["training"],
+    }
+
+
+@app.post("/trigger_telemetry")
+async def trigger_telemetry(authenticated: bool = Depends(verify_epistula_auth)):
+    """Forward a basic telemetry payload to the training service."""
+    config = get_config()
+    telemetry_url = "https://sn11.dippy-bittensor-subnet.com/optional_telemetry"
+    payload = {
+        "timestamp_ms": int(time.time() * 1000),
+        "miner_hotkey": config.auth.miner_hotkey,
+        "service": "reverse-proxy",
+    }
+
+    # This telemetry call can be disabled if desired.
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(telemetry_url, json=payload, timeout=10.0)
+        except httpx.RequestError as exc:
+            logger.error(f"Failed to send telemetry: {exc}")
+            raise HTTPException(status_code=502, detail="Unable to reach telemetry destination")
+
+    return {
+        "telemetry_destination": telemetry_url,
+        "telemetry_status": response.status_code,
     }
 
 

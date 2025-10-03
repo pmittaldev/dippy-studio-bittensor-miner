@@ -79,6 +79,7 @@ class AuthConfig:
     cache_duration: int = 3600
     chain_endpoint: str = "wss://entrypoint-finney.opentensor.ai:443"
     allowed_senders: Tuple[str, ...] = field(default_factory=tuple)
+    self_debug_key: Optional[str] = None
 
     @classmethod
     def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "AuthConfig":
@@ -99,12 +100,15 @@ class AuthConfig:
         allowed_senders = _coerce_string_sequence(
             data.get("allowed_senders", ()), field_name="auth.allowed_senders"
         )
+        debug_key_raw = data.get("self-debug-key") or data.get("self_debug_key")
+        debug_key = str(debug_key_raw).strip() if debug_key_raw else None
         return cls(
             miner_hotkey=miner_hotkey,
             allowed_delta_ms=allowed_delta_ms,
             cache_duration=cache_duration,
             chain_endpoint=chain_endpoint,
             allowed_senders=allowed_senders,
+            self_debug_key=debug_key,
         )
 
 
@@ -158,6 +162,8 @@ class Config:
             "miner_hotkey": _mask_secret(self.auth.miner_hotkey),
             "allowed_senders": list(self.auth.allowed_senders),
         }
+        if masked_auth.get("self_debug_key"):
+            masked_auth["self_debug_key"] = _mask_secret(self.auth.self_debug_key or "")
         return {
             "server": dict(self.server.__dict__),
             "auth": masked_auth,

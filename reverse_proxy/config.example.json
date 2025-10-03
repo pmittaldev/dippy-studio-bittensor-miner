@@ -10,7 +10,8 @@
     "allowed_delta_ms": 8000,
     "cache_duration": 3600,
     "chain_endpoint": "wss://entrypoint-finney.opentensor.ai:443",
-    "allowed_senders": ["5HauDwEzvs3MHhLooiiL7GWpxFGTuVzhwDBb5NqDyES25VLd"]
+    "allowed_senders": ["5HauDwEzvs3MHhLooiiL7GWpxFGTuVzhwDBb5NqDyES25VLd"],
+    "self-debug-key": "x"
   },
   "services": {
     "training_server_url": "http://localhost:8091",
